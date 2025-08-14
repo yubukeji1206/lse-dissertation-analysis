@@ -1,0 +1,107 @@
+---
+title: "04_descriptives_and_plot"
+output: html_document
+---
+
+# Descriptive Analysis
+```{r}
+# Continuous variables
+cont_vars <- c("ideal_children", "internet_freq", "confucianism_trad", "age", "income", "children")
+cont_stats <- cgss_clean_complete %>%
+  filter(!is.na(gender)) %>%
+  group_by(gender) %>%
+  summarise(across(all_of(cont_vars), 
+                   list(N=~sum(!is.na(.)), Mean=~mean(.,na.rm=T), SD=~sd(.,na.rm=T), Min=~min(.,na.rm=T), Max=~max(.,na.rm=T))),
+            .groups="drop")
+cont_stats
+
+# Categorical variables
+cat_vars <- c("education", "marital", "urban", "employed")
+cat_stats <- lapply(cat_vars, function(v) {
+  cgss_clean_complete %>%
+    filter(!is.na(gender), !is.na(.data[[v]])) %>%
+    tabyl(gender, !!sym(v)) %>%      
+    adorn_percentages("row") %>%      
+    adorn_pct_formatting(digits = 1)  
+})
+names(cat_stats) <- cat_vars
+cat_stats
+
+# Internet use frequency
+cgss_clean %>%
+  group_by(gender, internet_freq) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(gender) %>%
+  mutate(percent = round(n / sum(n) * 100, 1)) %>%
+  arrange(gender, internet_freq)
+
+# Fertility intention percentage
+cgss_mediation %>%
+  group_by(gender) %>%
+  summarise(
+    fertility_intention_percent = round(mean((ideal_children - children) > 0, na.rm = TRUE) * 100, 1)
+  )
+
+```
+
+# Visualization
+```{r}
+## Visualization
+plot_data <- cgss_clean_complete %>%
+  mutate(
+    age_group = case_when(
+      gender == 1 & male_age_group == 1 ~ "22–29",
+      gender == 1 & male_age_group == 2 ~ "30–39",
+      gender == 1 & male_age_group == 3 ~ "40–49",
+      gender == 2 & female_age_group == 1 ~ "20–29",
+      gender == 2 & female_age_group == 2 ~ "30–39",
+      gender == 2 & female_age_group == 3 ~ "40–49",
+      TRUE ~ NA_character_
+    ),
+    gender_label = ifelse(gender == 1, "Male", "Female")
+  ) %>%
+  filter(!is.na(age_group))
+
+# Model with three-way interaction
+model_inter <- lm(
+  ideal_children ~ internet_freq * gender_label * age_group +
+    education + marital + urban + employed + income + children,
+  data = plot_data
+)
+
+# Create data for prediction
+pred_data <- expand.grid(
+  internet_freq = seq(1, 5, 1),
+  gender_label = c("Male", "Female"),
+  age_group = c("20–29", "22–29", "30–39", "40–49"),
+  education = median(plot_data$education, na.rm = TRUE),
+  marital = median(plot_data$marital, na.rm = TRUE),
+  urban = median(plot_data$urban, na.rm = TRUE),
+  employed = median(plot_data$employed, na.rm = TRUE),
+  income = mean(plot_data$income, na.rm = TRUE),
+  children = mean(plot_data$children, na.rm = TRUE)
+) %>%
+  filter(!(gender_label == "Male" & age_group == "20–29")) %>% # Males do not have a 20-29 age group
+  filter(!(gender_label == "Female" & age_group == "22–29"))   # Females do not have a 22-29 age group
+
+# Predict values and confidence intervals
+pred <- predict(model_inter, newdata = pred_data, interval = "confidence")
+pred_df <- cbind(pred_data, as.data.frame(pred))
+
+# Generate the plot
+ggplot(pred_df, aes(x = internet_freq, y = fit, color = age_group, linetype = gender_label, group = interaction(gender_label, age_group))) +
+  geom_line(linewidth = 1) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr, fill = age_group), alpha = 0.15, colour = NA) +
+  scale_color_manual(values = c("20–29"="red", "22–29"="red", "30–39"="blue", "40–49"="green")) +
+  scale_fill_manual(values = c("20–29"="red", "22–29"="red", "30–39"="blue", "40–49"="green")) +
+  labs(
+    x = "Internet Use Frequency",
+    y = "Predicted Ideal Number of Children",
+    color = "Age Group",
+    fill = "Age Group",
+    linetype = "Gender",
+    title = "Figure 1: Interaction Effect of Internet Use, Gender, and Age on Ideal Number of Children"
+  ) +
+  theme_minimal(base_size = 14)
+```
+

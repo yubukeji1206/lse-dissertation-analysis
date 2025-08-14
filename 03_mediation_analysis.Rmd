@@ -1,0 +1,165 @@
+---
+title: "03_mediation_analysis"
+output: html_document
+---
+
+# Mediation Analysis
+```{r}
+## Mediation Analysis
+# Create complete-case dataset for mediation
+cgss_mediation <- cgss_clean %>%
+ dplyr::filter(
+    !is.na(confucianism_trad), !is.na(fertility_binary), !is.na(internet_freq),
+    !is.na(age), !is.na(education), !is.na(marital), !is.na(urban),
+    !is.na(employed), !is.na(income), !is.na(children), !is.na(gender)
+  )
+
+```
+
+# Baron & Kenny Causal Steps for Female 20-29 Subsample
+```{r}
+# Subsample analysis: Females aged 20-29 only
+dat_f2029 <- cgss_mediation %>%
+  dplyr::filter(gender == 2, dplyr::between(age, 20, 29))
+
+# Helper function to tidy robust SE results
+tidy_robust <- function(model, type = "HC1") {
+  V <- sandwich::vcovHC(model, type = type)
+  broom::tidy(lmtest::coeftest(model, vcov. = V)) %>%
+    dplyr::select(term, estimate, std.error, statistic, p.value)
+}
+
+# Step 1: Y ~ X (Total effect, path c)
+m_step1 <- glm(
+  fertility_binary ~ internet_freq + age + I(age^2) + education + marital + urban + employed + income + children,
+  data = dat_f2029, family = binomial("logit")
+)
+
+# Step 2: M ~ X (Path a)
+m_step2 <- lm(
+  confucianism_trad ~ internet_freq + age + I(age^2) + education + marital + urban + employed + income + children,
+  data = dat_f2029
+)
+
+# Step 3: Y ~ X + M (Paths b and c')
+m_step3 <- glm(
+  fertility_binary ~ internet_freq + confucianism_trad + age + I(age^2) + education + marital + urban + employed + income + children,
+  data = dat_f2029, family = binomial("logit")
+)
+
+# Extract coefficients and robust standard errors
+V1 <- sandwich::vcovHC(m_step1, type = "HC1"); V2 <- sandwich::vcovHC(m_step2, type = "HC1"); V3 <- sandwich::vcovHC(m_step3, type = "HC1")
+a  <- coef(m_step2)["internet_freq"];          sa <- sqrt(diag(V2))["internet_freq"]
+b  <- coef(m_step3)["confucianism_trad"];      sb <- sqrt(diag(V3))["confucianism_trad"]
+c_path <- coef(m_step1)["internet_freq"]
+c_prime_path <- coef(m_step3)["internet_freq"]
+
+# Sobel test and related tests for indirect effect
+sobel_z   <- as.numeric((a*b) / sqrt(b^2*sa^2 + a^2*sb^2))
+sobel_p   <- 2*pnorm(abs(sobel_z), lower.tail = FALSE)
+aroian_z  <- as.numeric((a*b) / sqrt(b^2*sa^2 + a^2*sb^2 + sa^2*sb^2))
+aroian_p  <- 2*pnorm(abs(aroian_z), lower.tail = FALSE)
+goodman_z <- as.numeric((a*b) / sqrt(b^2*sa^2 + a^2*sb^2 - sa^2*sb^2))
+goodman_p <- 2*pnorm(abs(goodman_z), lower.tail = FALSE)
+
+# Proportion of effect mediated (attenuation)
+attenuation <- if (is.na(c_path) || abs(c_path) < 1e-8) NA_real_ else abs(c_path - c_prime_path) / abs(c_path)
+
+# Consolidate results into tables
+out_steps <- dplyr::bind_rows(
+  tidy_robust(m_step1) %>% dplyr::filter(term == "internet_freq") %>% dplyr::mutate(step = "Step 1: Y~X+covars (c)"),
+  tidy_robust(m_step2) %>% dplyr::filter(term == "internet_freq") %>% dplyr::mutate(step = "Step 2: M~X+covars (a)"),
+  tidy_robust(m_step3) %>% dplyr::filter(term %in% c("internet_freq","confucianism_trad")) %>%
+    dplyr::mutate(step = dplyr::if_else(term == "internet_freq", "Step 3: Y~X+M+covars (c')", "Step 3: Y~X+M+covars (b)"))
+) %>%
+  dplyr::select(step, term, estimate, std.error, statistic, p.value)
+
+indirect_tests <- tibble::tibble(
+  test = c("Sobel", "Aroian", "Goodman"),
+  z_value = c(sobel_z, aroian_z, goodman_z),
+  p_value = c(sobel_p, aroian_p, goodman_p)
+)
+# Print results
+out_steps
+indirect_tests
+attenuation
+```
+
+# Bootstrap Mediation Effect Analysis
+```{r}
+run_med <- function(data, sample_name) {
+  mod_m <- lm(
+    confucianism_trad ~ internet_freq + age + I(age^2) + education + marital + urban + employed + income + children,
+    data = data
+  )
+  mod_y <- glm(
+    fertility_binary ~ internet_freq + confucianism_trad + age + I(age^2) + education + marital + urban + employed + income + children,
+    data = data, family = binomial()
+  )
+  med <- mediate(
+    model.m = mod_m, model.y = mod_y,
+    treat = "internet_freq", mediator = "confucianism_trad",
+    treat.value = 5, control.value = 1,
+    boot = TRUE, sims = 5000
+  )
+  tibble(
+    Sample = sample_name, Contrast = "5 vs 1",
+    Effect = c("ACME", "ADE", "Total Effect", "Prop Mediated"),
+    Estimate = c(med$d0, med$z0, med$tau.coef, med$n0),
+    CI_L = c(med$d0.ci[1], med$z0.ci[1], med$tau.ci[1], med$n0.ci[1]),
+    CI_U = c(med$d0.ci[2], med$z0.ci[2], med$tau.ci[2], med$n0.ci[2]),
+    p_value = c(med$d0.p, med$z0.p, med$tau.p, NA)
+  )
+}
+
+# Run for different samples
+tbl_med_all   <- run_med(cgss_mediation, "All")
+tbl_med_male  <- run_med(filter(cgss_mediation, gender == 1), "Male")
+tbl_med_fem   <- run_med(filter(cgss_mediation, gender == 2), "Female")
+tbl_med_f2029 <- run_med(filter(cgss_mediation, gender == 2, age >= 20, age <= 29), "Female 20-29")
+
+# Combine results
+tbl_med_all_out <-
+  dplyr::bind_rows(tbl_med_all, tbl_med_male, tbl_med_fem, tbl_med_f2029) %>%
+  dplyr::mutate(
+    Estimate = round(Estimate, 4),
+    CI = sprintf("[%.4f, %.4f]", round(CI_L, 4), round(CI_U, 4)),
+    p_value = signif(p_value, 3)
+  ) %>%
+  dplyr::select(Sample, Contrast, Effect, Estimate, CI, p_value)
+tbl_med_all_out
+```
+
+# Moderated Mediation Analysis
+```{r}
+run_modmed <- function(data, sample_name) {
+  # Mediator model with interaction
+  mod_m <- lm(
+    confucianism_trad ~ internet_freq * gender + age + I(age^2) + education + marital + urban + employed + income + children,
+    data = data
+  )
+  # Outcome model with interactions
+  mod_y <- glm(
+    fertility_binary ~ internet_freq * gender + confucianism_trad * gender + age + I(age^2) + education + marital + urban + employed + income + children,
+    data = data, family = binomial()
+  )
+  # Calculate effects for Males (gender = 1)
+  med_male <- mediate(
+    model.m = mod_m, model.y = mod_y, treat = "internet_freq", mediator= "confucianism_trad",
+    treat.value = 5, control.value = 1, covariates = list(gender = 1), boot = TRUE, sims = 5000
+  )
+  # Calculate effects for Females (gender = 2)
+  med_female <- mediate(
+    model.m = mod_m, model.y = mod_y, treat = "internet_freq", mediator= "confucianism_trad",
+    treat.value = 5, control.value = 1, covariates = list(gender = 2), boot = TRUE, sims = 5000
+  )
+  # Combine results
+  bind_rows(
+    tibble(Sample=paste0(sample_name, " (Male)"), Effect=c("ACME","ADE","Total","Prop. Med"), Estimate=c(med_male$d0,med_male$z0,med_male$tau.coef,med_male$n0), p_value=c(med_male$d0.p, med_male$z0.p, med_male$tau.p,NA)),
+    tibble(Sample=paste0(sample_name, " (Female)"), Effect=c("ACME","ADE","Total","Prop. Med"), Estimate=c(med_female$d0,med_female$z0,med_female$tau.coef,med_female$n0), p_value=c(med_female$d0.p,med_female$z0.p,med_female$tau.p,NA))
+  )
+}
+tbl_modmed_all <- run_modmed(cgss_mediation, "All")
+tbl_modmed_all
+```
+

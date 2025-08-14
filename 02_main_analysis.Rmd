@@ -1,0 +1,175 @@
+---
+title: "02_main_analysis"
+output: html_document
+---
+
+# Effect of Internet Use on Ideal Number of Children (Negative Binomial)
+```{r}
+# Helper function for calculating robust standard errors
+robust_test <- function(model, type = "HC1") {
+  coeftest(model, vcov = sandwich::vcovHC(model, type = type))
+}
+
+# Full sample model
+nb_all <- MASS::glm.nb(
+  ideal_children ~ internet_freq + age + I(age^2) +
+    education + marital + urban + employed + income,
+  data = cgss_clean_complete
+)
+robust_test(nb_all)
+
+# Models by gender
+male_data   <- dplyr::filter(cgss_clean_complete, gender == 1)
+female_data <- dplyr::filter(cgss_clean_complete, gender == 2)
+
+nb_male <- MASS::glm.nb(
+  ideal_children ~ internet_freq + age + I(age^2) +
+    education + marital + urban + employed + income,
+  data = male_data
+)
+nb_fema <- MASS::glm.nb(
+  ideal_children ~ internet_freq + age + I(age^2) +
+    education + marital + urban + employed + income,
+  data = female_data
+)
+
+robust_test(nb_male)
+robust_test(nb_fema)
+
+```
+
+# Subgroup Analysis by Age Group (Negative Binomial)
+```{r}
+## Effect of Internet Use on Ideal Number of Children by Age Group
+# Create age group variables
+cgss_clean <- cgss_clean %>%
+  dplyr::mutate(
+    male_age_group = dplyr::case_when(
+      gender == 1 & age >= 22 & age <= 29 ~ 1,
+      gender == 1 & age >= 30 & age <= 39 ~ 2,
+      gender == 1 & age >= 40 & age <= 49 ~ 3,
+      TRUE ~ NA_real_
+    ),
+    female_age_group = dplyr::case_when(
+      gender == 2 & age >= 20 & age <= 29 ~ 1,
+      gender == 2 & age >= 30 & age <= 39 ~ 2,
+      gender == 2 & age >= 40 & age <= 49 ~ 3,
+      TRUE ~ NA_real_
+    )
+  )
+
+# Create a complete-case dataset for this analysis
+cgss_clean_complete <- cgss_clean %>%
+  dplyr::filter(
+    !is.na(ideal_children), !is.na(internet_freq), !is.na(age),
+    !is.na(education), !is.na(marital), !is.na(urban),
+    !is.na(employed), !is.na(income), !is.na(gender),
+    !is.na(male_age_group) | !is.na(female_age_group)
+  )
+
+# Define a unified fitting function for convenience
+fit_nb <- function(data) {
+  MASS::glm.nb(
+    ideal_children ~ internet_freq + age + I(age^2) +
+      education + marital + urban + employed + income,
+    data = data
+  )
+}
+
+# Male subgroups
+male_22_29 <- cgss_clean_complete %>% dplyr::filter(gender == 1, male_age_group == 1)
+male_30_39 <- cgss_clean_complete %>% dplyr::filter(gender == 1, male_age_group == 2)
+male_40_49 <- cgss_clean_complete %>% dplyr::filter(gender == 1, male_age_group == 3)
+
+m_m_22_29 <- fit_nb(male_22_29); robust_test(m_m_22_29)
+m_m_30_39 <- fit_nb(male_30_39); robust_test(m_m_30_39)
+m_m_40_49 <- fit_nb(male_40_49); robust_test(m_m_40_49)
+
+# Female subgroups
+female_20_29 <- cgss_clean_complete %>% dplyr::filter(gender == 2, female_age_group == 1)
+female_30_39 <- cgss_clean_complete %>% dplyr::filter(gender == 2, female_age_group == 2)
+female_40_49 <- cgss_clean_complete %>% dplyr::filter(gender == 2, female_age_group == 3)
+
+m_f_20_29 <- fit_nb(female_20_29); robust_test(m_f_20_29)
+m_f_30_39 <- fit_nb(female_30_39); robust_test(m_f_30_39)
+m_f_40_49 <- fit_nb(female_40_49); robust_test(m_f_40_49)
+```
+
+# Logistic Regression Analysis
+```{r}
+## Convert Fertility Intention to a Binary Variable for Logistic Regression
+# Create fertility intention variables
+cgss_clean <- cgss_clean %>%
+  dplyr::mutate(
+    fertility_intent = pmax(ideal_children - children, 0),
+    fertility_intent = as.integer(fertility_intent)  
+  )
+
+cgss_clean <- cgss_clean %>%
+  dplyr::mutate(
+    fertility_binary = ifelse(fertility_intent > 0, 1, 0)
+  )
+
+# Create complete-case dataset for logit models
+cgss_bin <- cgss_clean %>%
+  dplyr::filter(
+    !is.na(fertility_binary), !is.na(internet_freq), !is.na(age),
+    !is.na(education), !is.na(marital), !is.na(urban), !is.na(employed),
+    !is.na(income), !is.na(gender), !is.na(children)
+  )
+
+# Define the model formula
+fml_logit <- fertility_binary ~ internet_freq + age + I(age^2) +
+  education + marital + urban + employed + income + children
+
+# Full sample logit model
+model_logit <- glm(fml_logit, data = cgss_bin, family = binomial(link = "logit"))
+robust_test(model_logit)
+
+# Logit models by gender
+model_logit_male   <- glm(fml_logit, data = dplyr::filter(cgss_bin, gender == 1), family = binomial(link = "logit"))
+model_logit_female <- glm(fml_logit, data = dplyr::filter(cgss_bin, gender == 2), family = binomial(link = "logit"))
+robust_test(model_logit_male)
+robust_test(model_logit_female)
+
+# Logit models by age subgroup
+cgss_bin <- cgss_bin %>%
+  dplyr::mutate(
+    male_age_group = dplyr::case_when(
+      gender == 1 & age >= 22 & age <= 29 ~ 1,
+      gender == 1 & age >= 30 & age <= 39 ~ 2,
+      gender == 1 & age >= 40 & age <= 49 ~ 3,
+      TRUE ~ male_age_group  # Retain existing values
+    ),
+    female_age_group = dplyr::case_when(
+      gender == 2 & age >= 20 & age <= 29 ~ 1,
+      gender == 2 & age >= 30 & age <= 39 ~ 2,
+      gender == 2 & age >= 40 & age <= 49 ~ 3,
+      TRUE ~ female_age_group
+    )
+  )
+# Subgroup data
+male_22_29   <- dplyr::filter(cgss_bin, gender == 1, male_age_group == 1)
+male_30_39   <- dplyr::filter(cgss_bin, gender == 1, male_age_group == 2)
+male_40_49   <- dplyr::filter(cgss_bin, gender == 1, male_age_group == 3)
+female_20_29 <- dplyr::filter(cgss_bin, gender == 2, female_age_group == 1)
+female_30_39 <- dplyr::filter(cgss_bin, gender == 2, female_age_group == 2)
+female_40_49 <- dplyr::filter(cgss_bin, gender == 2, female_age_group == 3)
+
+# Fit models
+logit_male_22_29   <- glm(fml_logit, data = male_22_29,   family = binomial("logit"))
+logit_male_30_39   <- glm(fml_logit, data = male_30_39,   family = binomial("logit"))
+logit_male_40_49   <- glm(fml_logit, data = male_40_49,   family = binomial("logit"))
+logit_female_20_29 <- glm(fml_logit, data = female_20_29, family = binomial("logit"))
+logit_female_30_39 <- glm(fml_logit, data = female_30_39, family = binomial("logit"))
+logit_female_40_49 <- glm(fml_logit, data = female_40_49, family = binomial("logit"))
+
+# Get robust standard errors
+robust_test(logit_male_22_29)
+robust_test(logit_male_30_39)
+robust_test(logit_male_40_49)
+robust_test(logit_female_20_29)
+robust_test(logit_female_30_39)
+robust_test(logit_female_40_49)
+```
+

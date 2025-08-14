@@ -1,0 +1,93 @@
+---
+title: "01_data_preprocessing"
+output: html_document
+---
+
+```{r}
+## Load Packages and Import Data
+library(haven)
+library(dplyr)
+library(ggplot2)
+library(MASS)
+library(sandwich)
+library(lmtest)
+library(mediation)
+library(janitor)
+
+# The path should be adjusted to the user's local directory.
+cgss_data <- read_dta("CGSS2023.dta")
+
+## Data Cleaning
+cgss_clean <- cgss_data %>%
+  dplyr::mutate(
+    # Dependent Variable: Ideal number of children
+    ideal_children = dplyr::case_when(
+      a371 %in% c(97, 98, 99) ~ NA_real_,  # Recode "Don't care/Don't know/Refuse" to NA
+      a371 < 0                ~ NA_real_,  # Recode negative values to NA
+      TRUE                    ~ as.numeric(a371) 
+    ),
+    
+    # Independent Variable: Internet use frequency
+    internet_freq = dplyr::if_else(a285 < 0, NA_real_, a285),
+    
+    # Mediator: Gender role attitudes (higher score means more traditional)
+    confucianism_role1 = dplyr::if_else(a421 < 0, NA_real_, a421),
+    confucianism_role2 = dplyr::if_else(a423 < 0, NA_real_, a423),
+    confucianism_trad  = rowMeans(cbind(confucianism_role1, confucianism_role2), na.rm = TRUE),
+    
+    # Control Variables
+    birth_year = dplyr::if_else(a3a < 0, NA_real_, a3a),
+    age = 2023 - birth_year,
+    
+    marital = dplyr::case_when(
+      a69 %in% c(1, 6) ~ 0, # Unmarried/Divorced
+      a69 %in% c(3, 4) ~ 1, # Married/Cohabiting
+      TRUE             ~ NA_real_
+    ),
+
+    education = dplyr::case_when(
+      a7a %in% c(-3, -2)       ~ NA_real_,
+      a7a %in% 1:4             ~ 1, # Junior high school and below
+      a7a %in% c(5, 6, 7, 9)   ~ 2, # Senior high school
+      a7a %in% c(8, 10, 11, 12, 13) ~ 3, # College and above
+      TRUE                     ~ NA_real_
+    ),
+   
+    urban = dplyr::case_when(
+      a25a %in% c(-3, -2) ~ NA_real_,
+      a25a %in% c(1, 2)   ~ 1, # Urban
+      a25a %in% c(3, 4)   ~ 0, # Non-urban
+      TRUE                ~ NA_real_
+    ),
+    
+    employed = dplyr::case_when(
+      a53 %in% c(-5, -3, -2) ~ NA_real_,
+      a53 == 1               ~ 0, # Unemployed
+      a53 %in% c(2, 3, 4)   ~ 1, # Employed
+      TRUE                   ~ NA_real_
+    ),
+    
+    income = dplyr::if_else(a64 < 0, NA_real_, a64), # Subjective relative income (1-5)
+    
+    sons = dplyr::if_else(a681 < 0, NA_real_, a681),
+    daughters = dplyr::if_else(a682 < 0, NA_real_, a682),
+    children = sons + daughters,
+    
+    gender = dplyr::if_else(a2 < 0, NA_real_, a2) # 1=Male, 2=Female
+  ) %>%
+  # Filter: Males aged 22-49, Females aged 20-49
+  dplyr::filter(
+    (gender == 1 & dplyr::between(age, 22, 49)) |
+    (gender == 2 & dplyr::between(age, 20, 49))
+  ) %>%
+  # Select final variables for analysis
+  dplyr::select(
+    ideal_children, internet_freq, confucianism_trad, age, marital, education,
+    urban, employed, income, sons, daughters, children, gender
+  )
+
+# Create a complete-case dataset for primary models
+cgss_clean_complete <- na.omit(cgss_clean)
+nrow(cgss_clean_complete)
+```
+
